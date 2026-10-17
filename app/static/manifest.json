@@ -1,0 +1,67 @@
+{
+  "name": "Tomato Focus Kanban",
+  "short_name": "TomatoPomo",
+  "description": "Multi-user Kanban board and Pomodoro focus timer with PDF syllabus ingestion.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "any",
+  "theme_color": "#e11d48",
+  "background_color": "#f8fafc",
+  "categories": [
+    "productivity",
+    "utilities",
+    "education"
+  ],
+  "icons": [
+    {
+      "src": "/tomato-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/tomato.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/tomato.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Start 25m Focus",
+      "short_name": "Focus",
+      "description": "Jump straight into a 25-minute Pomodoro interval",
+      "url": "/?action=focus",
+      "icons": [
+        {
+          "src": "/tomato.png",
+          "sizes": "512x512"
+        }
+      ]
+    },
+    {
+      "name": "Upload Syllabus / PDF",
+      "short_name": "Upload",
+      "description": "Import tasks from a document",
+      "url": "/?action=upload",
+      "icons": [
+        {
+          "src": "/tomato.png",
+          "sizes": "512x512"
+        }
+      ]
+    }
+  ]
+}
