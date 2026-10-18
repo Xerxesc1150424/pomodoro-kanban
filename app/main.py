@@ -3,7 +3,7 @@ import re
 from typing import Optional
 import uuid
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, File, HTTPException, UploadFile, Depends
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
@@ -75,9 +75,13 @@ class TaskUpdate(BaseModel):
 def register(auth: AuthRequest):
   username = auth.username.strip().lower()
   if not username or not auth.password:
-    raise HTTPException(status_code=400, detail="Username and password required")
+    raise HTTPException(
+        status_code=400, detail="Username and password required"
+    )
   with Session(engine) as session:
-    existing = session.exec(select(User).where(User.username == username)).first()
+    existing = session.exec(
+        select(User).where(User.username == username)
+    ).first()
     if existing:
       raise HTTPException(status_code=400, detail="Username already exists")
     hashed = pwd_context.hash(auth.password)
@@ -93,7 +97,9 @@ def login(auth: AuthRequest):
   with Session(engine) as session:
     user = session.exec(select(User).where(User.username == username)).first()
     if not user or not pwd_context.verify(auth.password, user.hashed_password):
-      raise HTTPException(status_code=401, detail="Invalid username or password")
+      raise HTTPException(
+          status_code=401, detail="Invalid username or password"
+      )
     return {"message": "Login successful", "username": username}
 
 
@@ -158,6 +164,64 @@ def delete_task(task_id: str):
     return {"deleted": True, "id": task_id}
 
 
+def clean_pdf_task_line(line: str) -> Optional[str]:
+  line = line.strip()
+  if not line or len(line) < 4:
+    return None
+
+  # Discard calendar headers, dates, and upcoming section previews
+  header_patterns = [
+      r"^tasks?:",
+      r"^(saturday|sunday|monday|tuesday|wednesday|thursday|friday)",
+      r"^(morning|afternoon|evening|late afternoon):",
+      r"^coming up",
+      r"^•",
+      r"^one 25-minute pomodoro",
+      r"^tags?:",
+      r"^albada \(skip",
+      r"^boulder:",
+  ]
+  lower_line = line.lower()
+  if any(re.search(pat, lower_line) for pat in header_patterns):
+    return None
+
+  # Strip leading checkmark symbols, pipes, or bullets
+  text = re.sub(r"^[☐\s|•\-]+", "", line).strip()
+
+  # Skip table header lines
+  if re.match(r"^task\s*\|\s*\d*\s*\|\s*tag", text, re.IGNORECASE):
+    return None
+  if text.lower() in ["task", "tag", "reading", "boulder", "pm", "build"]:
+    return None
+
+  # If structured like "Task Title | 1 | Tag", extract the middle task segment
+  if "|" in text:
+    segments = [s.strip() for s in text.split("|") if s.strip()]
+    if segments:
+      if segments[0] in ["☐", "Π", ""] and len(segments) > 1:
+        text = segments[1]
+      else:
+        text = segments[0]
+
+  # Strip out trailing Pomodoro tally counts and tags at line ends
+  text = re.sub(r"\s*\|\s*\d+(?:-\d+)?\s*\|\s*[A-Za-z]+.*$", "", text).strip()
+  text = re.sub(
+      r"\s*\|\s*(Reading|Boulder|PM|Build)$", "", text, re.IGNORECASE
+  )
+  text = re.sub(r"\s*\|\s*\d+(?:-\d+)?$", "", text).strip()
+
+  # Remove inline due date prefixes
+  text = re.sub(
+      r"^optional,\s*due\s*[^:]+:\s*", "", text, re.IGNORECASE
+  ).strip()
+
+  # Exclude standalone numbers or single fragments
+  if len(text) < 4 or text.isdigit():
+    return None
+
+  return text
+
+
 @app.post("/api/upload-pdf")
 async def upload_pdf(username: str, file: UploadFile = File(...)):
   contents = await file.read()
@@ -166,14 +230,18 @@ async def upload_pdf(username: str, file: UploadFile = File(...)):
     f.write(contents)
 
   created_tasks = []
+  seen_titles = set()
+
   with pdfplumber.open(temp_path) as pdf:
     for page in pdf.pages:
       text = page.extract_text() or ""
       for line in text.split("\n"):
-        clean_line = line.strip()
-        if clean_line and len(clean_line) > 3:
-          task = Task(username=username.strip().lower(), title=clean_line)
-          created_tasks.append(task)
+        task_title = clean_pdf_task_line(line)
+        if task_title and task_title not in seen_titles:
+          seen_titles.add(task_title)
+          created_tasks.append(
+              Task(username=username.strip().lower(), title=task_title)
+          )
 
   if os.path.exists(temp_path):
     os.remove(temp_path)
