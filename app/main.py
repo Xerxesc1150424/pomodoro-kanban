@@ -3,9 +3,10 @@ import re
 from typing import Optional
 import uuid
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from passlib.context import CryptContext
 import pdfplumber
 from pydantic import BaseModel
 from sqlmodel import Field, Session, SQLModel, create_engine, select
@@ -22,6 +23,14 @@ engine = create_engine(
         {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
     ),
 )
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+class User(SQLModel, table=True):
+  id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+  username: str = Field(unique=True, index=True)
+  hashed_password: str
 
 
 class Task(SQLModel, table=True):
@@ -46,6 +55,11 @@ app.add_middleware(
 )
 
 
+class AuthRequest(BaseModel):
+  username: str
+  password: str
+
+
 class TaskCreate(BaseModel):
   username: str
   title: str
@@ -57,10 +71,35 @@ class TaskUpdate(BaseModel):
   archived: Optional[bool] = None
 
 
+@app.post("/api/register")
+def register(auth: AuthRequest):
+  username = auth.username.strip().lower()
+  if not username or not auth.password:
+    raise HTTPException(status_code=400, detail="Username and password required")
+  with Session(engine) as session:
+    existing = session.exec(select(User).where(User.username == username)).first()
+    if existing:
+      raise HTTPException(status_code=400, detail="Username already exists")
+    hashed = pwd_context.hash(auth.password)
+    user = User(username=username, hashed_password=hashed)
+    session.add(user)
+    session.commit()
+    return {"message": "Registered successfully", "username": username}
+
+
+@app.post("/api/login")
+def login(auth: AuthRequest):
+  username = auth.username.strip().lower()
+  with Session(engine) as session:
+    user = session.exec(select(User).where(User.username == username)).first()
+    if not user or not pwd_context.verify(auth.password, user.hashed_password):
+      raise HTTPException(status_code=401, detail="Invalid username or password")
+    return {"message": "Login successful", "username": username}
+
+
 @app.get("/api/tasks")
 def get_tasks(username: str):
   with Session(engine) as session:
-    # Only return active, unarchived board tasks
     return session.exec(
         select(Task).where(
             Task.username == username.strip().lower(), Task.archived == False
@@ -96,7 +135,6 @@ def update_task(task_id: str, payload: TaskUpdate):
       raise HTTPException(status_code=404, detail="Task not found")
     if payload.status is not None:
       task.status = payload.status
-      # When marked completed, immediately archive
       if payload.status == "completed":
         task.archived = True
     if payload.completed_pomodoros is not None:
