@@ -1,151 +1,313 @@
-import os
-import re
-from typing import Optional
-import uuid
-from zoneinfo import ZoneInfo
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-import pdfplumber
-from pydantic import BaseModel
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tomato Pomodoro</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/tomato.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen p-6">
+  <div class="max-w-6xl mx-auto">
+    <!-- Header -->
+    <header class="flex flex-wrap items-center justify-between gap-4 mb-8 bg-white p-4 rounded-xl shadow-sm">
+      <div class="flex items-center gap-3">
+        <img src="/tomato.png" alt="Tomato" class="w-10 h-10 object-contain">
+        <h1 class="text-xl font-bold text-rose-600">Tomato Focus Kanban</h1>
+      </div>
+      <div class="flex items-center gap-3">
+        <button onclick="toggleArchiveModal()" class="border border-slate-300 hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5">
+          <span>📦</span> Archive
+        </button>
+        <div class="flex items-center gap-2 border-l pl-3">
+          <label class="text-xs font-semibold text-slate-500 uppercase">User:</label>
+          <input id="userInput" type="text" value="xerxes" onchange="loadTasks()" class="border px-3 py-1.5 rounded-lg text-sm bg-slate-50 focus:outline-rose-500 w-28">
+        </div>
+      </div>
+    </header>
 
-LA_TZ = ZoneInfo("America/Los_Angeles")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./pomodoro.db")
+    <!-- Timer Section -->
+    <div class="bg-rose-50 border border-rose-200 rounded-xl p-6 mb-8 text-center shadow-sm">
+      <p id="timerState" class="text-sm font-semibold text-rose-500 uppercase tracking-wide">Focus Session</p>
+      <h2 id="timerDisplay" class="text-6xl font-extrabold text-rose-600 my-2">25:00</h2>
+      <p id="activeTaskLabel" class="text-sm text-slate-600 mb-4">No task in progress</p>
+      <div class="flex justify-center gap-3">
+        <button id="startBtn" onclick="toggleTimer()" class="bg-rose-600 hover:bg-rose-700 text-white px-6 py-2 rounded-lg font-semibold shadow">Start Focus</button>
+        <button onclick="resetTimer()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium">Reset</button>
+      </div>
+    </div>
 
-if DATABASE_URL.startswith("postgres://"):
-  DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    <!-- Controls -->
+    <div class="flex flex-wrap gap-4 mb-6">
+      <input id="newTaskTitle" type="text" placeholder="Add a new task..." onkeydown="if(event.key === 'Enter') addTask()" class="border px-4 py-2 rounded-lg flex-1 shadow-sm focus:outline-rose-500">
+      <button onclick="addTask()" class="bg-slate-900 hover:bg-black text-white px-5 py-2 rounded-lg font-medium shadow-sm">Add Task</button>
+      <label class="bg-white border hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg font-medium shadow-sm cursor-pointer">
+        Upload PDF Syllabus
+        <input type="file" id="pdfFileInput" accept="application/pdf" onchange="uploadPdf()" class="hidden">
+      </label>
+    </div>
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args=(
-        {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-    ),
-)
+    <!-- Kanban Columns -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="bg-slate-200/70 p-4 rounded-xl">
+        <h3 class="font-bold mb-3 text-slate-700 flex justify-between items-center">
+          <span>To-Do</span>
+          <span id="count-todo" class="text-xs bg-slate-300 text-slate-700 px-2 py-0.5 rounded-full font-normal">0</span>
+        </h3>
+        <div id="col-todo" class="space-y-2"></div>
+      </div>
+      <div class="bg-amber-100/60 p-4 rounded-xl">
+        <h3 class="font-bold mb-3 text-amber-800 flex justify-between items-center">
+          <span>Pomodoro Queue</span>
+          <span id="count-pomodoro" class="text-xs bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full font-normal">0</span>
+        </h3>
+        <div id="col-pomodoro" class="space-y-2"></div>
+      </div>
+      <div class="bg-rose-100/60 p-4 rounded-xl">
+        <h3 class="font-bold mb-3 text-rose-800 flex justify-between items-center">
+          <span>In Progress</span>
+          <span id="count-in_progress" class="text-xs bg-rose-200 text-rose-800 px-2 py-0.5 rounded-full font-normal">0</span>
+        </h3>
+        <div id="col-in_progress" class="space-y-2"></div>
+      </div>
+      <div class="bg-emerald-100/60 p-4 rounded-xl">
+        <h3 class="font-bold mb-3 text-emerald-800 flex justify-between items-center">
+          <span>Completed</span>
+          <span id="count-completed" class="text-xs bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded-full font-normal">0</span>
+        </h3>
+        <div id="col-completed" class="space-y-2"></div>
+      </div>
+    </div>
+  </div>
 
+  <!-- Archive Modal -->
+  <div id="archiveModal" class="fixed inset-0 bg-black/40 backdrop-blur-sm hidden flex items-center justify-center p-4 z-50">
+    <div class="bg-white w-full max-w-lg rounded-xl shadow-xl p-6 flex flex-col max-h-[85vh]">
+      <div class="flex justify-between items-center mb-4 pb-2 border-b">
+        <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">📦 Archived Tasks</h2>
+        <button onclick="toggleArchiveModal()" class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+      </div>
+      <div id="archiveList" class="flex-1 overflow-y-auto space-y-2 pr-1"></div>
+      <div class="mt-4 pt-3 border-t text-right">
+        <button onclick="toggleArchiveModal()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-1.5 rounded-lg text-sm font-medium">Close</button>
+      </div>
+    </div>
+  </div>
 
-class Task(SQLModel, table=True):
-  id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
-  username: str = Field(index=True)
-  title: str
-  status: str = Field(default="todo")  # todo, pomodoro, in_progress, completed
-  completed_pomodoros: int = Field(default=0)
-  archived: bool = Field(default=False)
+  <script>
+    let timeLeft = 25 * 60;
+    let timerId = null;
+    let isRest = false;
+    let currentTask = null;
 
+    function getUsername() {
+      return document.getElementById("userInput").value.trim().toLowerCase() || "xerxes";
+    }
 
-SQLModel.metadata.create_all(engine)
+    async function loadTasks() {
+      const res = await fetch(`/api/tasks?username=${getUsername()}`);
+      const tasks = await res.json();
+      const counts = { todo: 0, pomodoro: 0, in_progress: 0, completed: 0 };
 
-app = FastAPI(title="Pomodoro Kanban")
+      ["todo", "pomodoro", "in_progress", "completed"].forEach(col => {
+        document.getElementById(`col-${col}`).innerHTML = "";
+      });
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+      tasks.forEach(task => {
+        counts[task.status] = (counts[task.status] || 0) + 1;
+        const card = document.createElement("div");
+        card.className = "bg-white p-3 rounded-lg shadow-sm border border-slate-200 flex flex-col gap-2 relative group";
+        card.innerHTML = `
+          <div class="flex items-start justify-between gap-2">
+            <span class="text-sm font-medium text-slate-800 break-words">${task.title}</span>
+            <button onclick="deleteTask('${task.id}')" title="Delete Task" class="text-slate-300 hover:text-rose-600 p-0.5 rounded transition text-sm">✕</button>
+          </div>
+          <div class="text-xs text-slate-500">Pomos: ${task.completed_pomodoros}</div>
+          <div class="flex gap-1.5 mt-1 text-xs">
+            ${task.status !== 'pomodoro' ? `<button onclick="moveTask('${task.id}', 'pomodoro')" class="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded border border-amber-200">Queue</button>` : ''}
+            ${task.status !== 'in_progress' ? `<button onclick="startFocusTask('${task.id}', '${task.title.replace(/'/g, "\\'")}')" class="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded border border-rose-200">Focus</button>` : ''}
+            ${task.status !== 'completed' ? `<button onclick="completeAndArchive('${task.id}')" class="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded border border-emerald-200">Done & Archive</button>` : ''}
+          </div>
+        `;
+        const colElem = document.getElementById(`col-${task.status}`);
+        if (colElem) colElem.appendChild(card);
+      });
 
+      Object.keys(counts).forEach(status => {
+        const counter = document.getElementById(`count-${status}`);
+        if (counter) counter.innerText = counts[status];
+      });
+    }
 
-class TaskCreate(BaseModel):
-  username: str
-  title: str
+    async function addTask() {
+      const input = document.getElementById("newTaskTitle");
+      const title = input.value.trim();
+      if (!title) return;
+      await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: getUsername(), title })
+      });
+      input.value = "";
+      loadTasks();
+    }
 
+    async function moveTask(id, status) {
+      await fetch(`/api/tasks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      loadTasks();
+    }
 
-class TaskUpdate(BaseModel):
-  status: Optional[str] = None
-  completed_pomodoros: Optional[int] = None
-  archived: Optional[bool] = None
+    async function completeAndArchive(id) {
+      await fetch(`/api/tasks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "completed", archived: true })
+      });
+      loadTasks();
+    }
 
+    async function deleteTask(id) {
+      if (!confirm("Are you sure you want to delete this task?")) return;
+      await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+      loadTasks();
+    }
 
-@app.get("/api/tasks")
-def get_tasks(username: str):
-  with Session(engine) as session:
-    # Only return active, unarchived board tasks
-    return session.exec(
-        select(Task).where(
-            Task.username == username.strip().lower(), Task.archived == False
-        )
-    ).all()
+    async function toggleArchiveModal() {
+      const modal = document.getElementById("archiveModal");
+      const isOpening = modal.classList.contains("hidden");
+      if (isOpening) {
+        modal.classList.remove("hidden");
+        await loadArchive();
+      } else {
+        modal.classList.add("hidden");
+      }
+    }
 
+    async function loadArchive() {
+      const container = document.getElementById("archiveList");
+      container.innerHTML = "<p class='text-sm text-slate-400'>Loading archive...</p>";
+      const res = await fetch(`/api/tasks/archived?username=${getUsername()}`);
+      const tasks = await res.json();
+      container.innerHTML = "";
+      if (tasks.length === 0) {
+        container.innerHTML = "<p class='text-sm text-slate-400 text-center py-4'>No archived tasks yet.</p>";
+        return;
+      }
+      tasks.forEach(task => {
+        const item = document.createElement("div");
+        item.className = "p-3 bg-slate-50 border rounded-lg flex items-center justify-between gap-3 text-sm";
+        item.innerHTML = `
+          <div>
+            <p class="font-medium text-slate-700 line-through">${task.title}</p>
+            <p class="text-xs text-slate-400">Pomos completed: ${task.completed_pomodoros}</p>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="unarchiveTask('${task.id}')" class="text-xs text-blue-600 hover:underline">Restore</button>
+            <button onclick="deleteTask('${task.id}'); loadArchive();" class="text-xs text-rose-500 hover:underline">Delete</button>
+          </div>
+        `;
+        container.appendChild(item);
+      });
+    }
 
-@app.get("/api/tasks/archived")
-def get_archived_tasks(username: str):
-  with Session(engine) as session:
-    return session.exec(
-        select(Task).where(
-            Task.username == username.strip().lower(), Task.archived == True
-        )
-    ).all()
+    async function unarchiveTask(id) {
+      await fetch(`/api/tasks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "todo", archived: false })
+      });
+      loadArchive();
+      loadTasks();
+    }
 
+    async function startFocusTask(id, title) {
+      currentTask = { id, title };
+      document.getElementById("activeTaskLabel").innerText = `Focusing on: ${title}`;
+      await moveTask(id, "in_progress");
+      resetTimer();
+      toggleTimer();
+    }
 
-@app.post("/api/tasks")
-def add_task(payload: TaskCreate):
-  with Session(engine) as session:
-    task = Task(username=payload.username.strip().lower(), title=payload.title)
-    session.add(task)
-    session.commit()
-    session.refresh(task)
-    return task
+    function updateTimerDisplay() {
+      const m = Math.floor(timeLeft / 60).toString().padStart(2, "0");
+      const s = (timeLeft % 60).toString().padStart(2, "0");
+      document.getElementById("timerDisplay").innerText = `${m}:${s}`;
+    }
 
+    function toggleTimer() {
+      const btn = document.getElementById("startBtn");
+      if (timerId) {
+        clearInterval(timerId);
+        timerId = null;
+        btn.innerText = "Resume";
+      } else {
+        btn.innerText = "Pause";
+        timerId = setInterval(() => {
+          if (timeLeft > 0) {
+            timeLeft--;
+            updateTimerDisplay();
+          } else {
+            clearInterval(timerId);
+            timerId = null;
+            handleIntervalComplete();
+          }
+        }, 1000);
+      }
+    }
 
-@app.patch("/api/tasks/{task_id}")
-def update_task(task_id: str, payload: TaskUpdate):
-  with Session(engine) as session:
-    task = session.get(Task, task_id)
-    if not task:
-      raise HTTPException(status_code=404, detail="Task not found")
-    if payload.status is not None:
-      task.status = payload.status
-      # When marked completed, immediately archive
-      if payload.status == "completed":
-        task.archived = True
-    if payload.completed_pomodoros is not None:
-      task.completed_pomodoros = payload.completed_pomodoros
-    if payload.archived is not None:
-      task.archived = payload.archived
-    session.add(task)
-    session.commit()
-    session.refresh(task)
-    return task
+    async function handleIntervalComplete() {
+      if (!isRest) {
+        if (currentTask) {
+          const finished = confirm(`25-minute Pomodoro finished! Did you complete: "${currentTask.title}"?`);
+          if (finished) {
+            await completeAndArchive(currentTask.id);
+            currentTask = null;
+            document.getElementById("activeTaskLabel").innerText = "No task in progress";
+          }
+        }
+        alert("Starting 5-minute break.");
+        isRest = true;
+        timeLeft = 5 * 60;
+        document.getElementById("timerState").innerText = "Rest Interval";
+      } else {
+        alert("Break over! Ready for your next focused session.");
+        isRest = false;
+        timeLeft = 25 * 60;
+        document.getElementById("timerState").innerText = "Focus Session";
+      }
+      updateTimerDisplay();
+      document.getElementById("startBtn").innerText = "Start Focus";
+    }
 
+    function resetTimer() {
+      clearInterval(timerId);
+      timerId = null;
+      isRest = false;
+      timeLeft = 25 * 60;
+      document.getElementById("timerState").innerText = "Focus Session";
+      document.getElementById("startBtn").innerText = "Start Focus";
+      updateTimerDisplay();
+    }
 
-@app.delete("/api/tasks/{task_id}")
-def delete_task(task_id: str):
-  with Session(engine) as session:
-    task = session.get(Task, task_id)
-    if not task:
-      raise HTTPException(status_code=404, detail="Task not found")
-    session.delete(task)
-    session.commit()
-    return {"deleted": True, "id": task_id}
+    async function uploadPdf() {
+      const input = document.getElementById("pdfFileInput");
+      if (!input.files[0]) return;
+      const formData = new FormData();
+      formData.append("file", input.files[0]);
+      await fetch(`/api/upload-pdf?username=${getUsername()}`, {
+        method: "POST",
+        body: formData
+      });
+      input.value = "";
+      loadTasks();
+    }
 
-
-@app.post("/api/upload-pdf")
-async def upload_pdf(username: str, file: UploadFile = File(...)):
-  contents = await file.read()
-  temp_path = f"/tmp/{file.filename}"
-  with open(temp_path, "wb") as f:
-    f.write(contents)
-
-  created_tasks = []
-  with pdfplumber.open(temp_path) as pdf:
-    for page in pdf.pages:
-      text = page.extract_text() or ""
-      for line in text.split("\n"):
-        clean_line = line.strip()
-        if clean_line and len(clean_line) > 3:
-          task = Task(username=username.strip().lower(), title=clean_line)
-          created_tasks.append(task)
-
-  if os.path.exists(temp_path):
-    os.remove(temp_path)
-
-  with Session(engine) as session:
-    for task in created_tasks:
-      session.add(task)
-    session.commit()
-
-  return {"added_count": len(created_tasks)}
-
-
-app.mount("/", StaticFiles(directory="app/static", html=True), name="static")
+    loadTasks();
+  </script>
+</body>
+</html>
