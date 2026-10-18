@@ -13,7 +13,6 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select
 LA_TZ = ZoneInfo("America/Los_Angeles")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./pomodoro.db")
 
-# Fix Render's postgres:// URI scheme if needed
 if DATABASE_URL.startswith("postgres://"):
   DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -26,13 +25,12 @@ engine = create_engine(
 
 
 class Task(SQLModel, table=True):
-  id: str = Field(
-      default_factory=lambda: str(uuid.uuid4()), primary_key=True
-  )
+  id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
   username: str = Field(index=True)
   title: str
   status: str = Field(default="todo")  # todo, pomodoro, in_progress, completed
   completed_pomodoros: int = Field(default=0)
+  archived: bool = Field(default=False)
 
 
 SQLModel.metadata.create_all(engine)
@@ -56,13 +54,27 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
   status: Optional[str] = None
   completed_pomodoros: Optional[int] = None
+  archived: Optional[bool] = None
 
 
 @app.get("/api/tasks")
 def get_tasks(username: str):
   with Session(engine) as session:
+    # Only return active, unarchived board tasks
     return session.exec(
-        select(Task).where(Task.username == username)
+        select(Task).where(
+            Task.username == username.strip().lower(), Task.archived == False
+        )
+    ).all()
+
+
+@app.get("/api/tasks/archived")
+def get_archived_tasks(username: str):
+  with Session(engine) as session:
+    return session.exec(
+        select(Task).where(
+            Task.username == username.strip().lower(), Task.archived == True
+        )
     ).all()
 
 
@@ -84,12 +96,28 @@ def update_task(task_id: str, payload: TaskUpdate):
       raise HTTPException(status_code=404, detail="Task not found")
     if payload.status is not None:
       task.status = payload.status
+      # When marked completed, immediately archive
+      if payload.status == "completed":
+        task.archived = True
     if payload.completed_pomodoros is not None:
       task.completed_pomodoros = payload.completed_pomodoros
+    if payload.archived is not None:
+      task.archived = payload.archived
     session.add(task)
     session.commit()
     session.refresh(task)
     return task
+
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: str):
+  with Session(engine) as session:
+    task = session.get(Task, task_id)
+    if not task:
+      raise HTTPException(status_code=404, detail="Task not found")
+    session.delete(task)
+    session.commit()
+    return {"deleted": True, "id": task_id}
 
 
 @app.post("/api/upload-pdf")
@@ -120,5 +148,4 @@ async def upload_pdf(username: str, file: UploadFile = File(...)):
   return {"added_count": len(created_tasks)}
 
 
-# Mount static UI files
 app.mount("/", StaticFiles(directory="app/static", html=True), name="static")
